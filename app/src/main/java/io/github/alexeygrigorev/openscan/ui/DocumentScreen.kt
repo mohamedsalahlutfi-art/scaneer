@@ -32,11 +32,14 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.automirrored.filled.RotateRight
 import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -142,6 +145,32 @@ class DocumentViewModel(
 
     data class ShareRequest(val file: File, val mimeType: String, val label: String)
 
+    /** True when the running export should go straight to the share sheet. */
+    @Volatile
+    private var shareWhenReady = false
+
+    /** One tap: build the PDF with the chosen filters and open the share sheet. */
+    fun exportAndShare() {
+        shareWhenReady = true
+        exportPdf()
+    }
+
+    /** "All pages" filter: sets the document filter and clears page overrides. */
+    fun applyFilterToAll(filterId: String) {
+        viewModelScope.launch {
+            repository.setDocumentFilter(documentId, filterId)
+            repository.getPages(documentId)
+                .filter { it.filter != null }
+                .forEach { repository.setPageFilter(it.id, null) }
+            settings.setFilterDefault(filterId)
+        }
+    }
+
+    /** Per-page override; null makes the page follow the document filter again. */
+    fun setPageFilter(page: PageEntity, filterId: String?) {
+        viewModelScope.launch { repository.setPageFilter(page.id, filterId) }
+    }
+
     /** Serializes page moves so rapid taps can't interleave read-modify-write cycles. */
     private val moveMutex = Mutex()
 
@@ -220,8 +249,14 @@ class DocumentViewModel(
                 withContext(Dispatchers.IO) {
                     FileOutputStream(out).use { stream -> PdfExporter.exportPdf(pageFiles, filters, stream) }
                 }
-                exportReady.value = out
+                if (shareWhenReady) {
+                    shareWhenReady = false
+                    shareRequest.value = ShareRequest(out, "application/pdf", "Share PDF")
+                } else {
+                    exportReady.value = out
+                }
             } catch (t: Throwable) {
+                shareWhenReady = false
                 exportError.value = t.message ?: "PDF export failed"
             } finally {
                 exporting.value = false
@@ -430,6 +465,7 @@ fun DocumentScreen(
     var reordering by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var filterPickerOpen by remember { mutableStateOf(false) }
+    var pageFilterTarget by remember { mutableStateOf<PageEntity?>(null) }
 
     // Storage-access save-as for the ready PDF (item 4).
     val saveLauncher = rememberLauncherForActivityResult(
@@ -440,6 +476,15 @@ fun DocumentScreen(
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        floatingActionButton = {
+            if (pages.isNotEmpty() && !reordering) {
+                ExtendedFloatingActionButton(
+                    onClick = { if (!exporting) viewModel.exportAndShare() },
+                    icon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                    text = { Text(if (exporting) "Preparing PDF…" else "Share PDF") },
+                )
+            }
+        },
         topBar = {
             TopAppBar(
                 // Item 7: the title is the rename affordance.
@@ -588,6 +633,14 @@ fun DocumentScreen(
                     }
                 }
             } else {
+                if (!reordering) {
+                    FilterChipsRow(
+                        label = "Filter for all pages (tap the filter icon on a page to change only that page)",
+                        selectedId = document?.filter ?: appFilterDefault,
+                        onPick = { id -> if (id != null) viewModel.applyFilterToAll(id) },
+                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                    )
+                }
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(pages, key = { it.id }) { page ->
                         val index = pages.indexOf(page)
@@ -604,6 +657,8 @@ fun DocumentScreen(
                             onOcr = { viewModel.recognizeText(page) },
                             onRotate = { viewModel.rotatePage(page) },
                             onDelete = { deletingPage = page },
+                            hasOwnFilter = page.filter != null,
+                            onFilter = { pageFilterTarget = page },
                         )
                     }
                 }
@@ -617,6 +672,14 @@ fun DocumentScreen(
         BatchImport.summary.value?.let { (added, failed) ->
             BatchImport.summary.value = null
             snackbarHostState.showSnackbar(formatBatchImportSummary(added, failed))
+        }
+    }
+
+    // "Save & share PDF" from the capture review: export and share once.
+    LaunchedEffect(Unit) {
+        if (BatchImport.sharePdf.value) {
+            BatchImport.sharePdf.value = false
+            viewModel.exportAndShare()
         }
     }
 
@@ -676,6 +739,20 @@ fun DocumentScreen(
             defaultLabel = ScanFilter.fromId(appFilterDefault).title,
             onPick = { id -> viewModel.setDocumentFilter(id) },
             onDismiss = { filterPickerOpen = false },
+        )
+    }
+
+    pageFilterTarget?.let { target ->
+        val documentFilterTitle = ScanFilter.fromId(document?.filter ?: appFilterDefault).title
+        FilterPickerDialog(
+            title = "Filter for page ${target.position + 1}",
+            selectedId = target.filter,
+            defaultLabel = "Same as all pages ($documentFilterTitle)",
+            onPick = { id ->
+                viewModel.setPageFilter(target, id)
+                pageFilterTarget = null
+            },
+            onDismiss = { pageFilterTarget = null },
         )
     }
 
@@ -768,9 +845,19 @@ private fun PageRow(
     onOcr: () -> Unit,
     onRotate: () -> Unit,
     onDelete: () -> Unit,
+    hasOwnFilter: Boolean = false,
+    onFilter: () -> Unit = {},
 ) {
     ListItem(
         headlineContent = { Text(formatPagePosition(page.position, totalPages)) },
+        supportingContent = {
+            Text(
+                if (hasOwnFilter) "${filter.title} (this page only)" else filter.title,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (hasOwnFilter) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
         leadingContent = {
             PageThumbnail(
                 filePath = page.filePath,
@@ -804,6 +891,12 @@ private fun PageRow(
                 }
             } else {
                 Row {
+                    IconButton(onClick = onFilter) {
+                        Icon(
+                            Icons.Filled.Tune,
+                            contentDescription = formatPageActionDescription("Filter for", page.position, totalPages),
+                        )
+                    }
                     IconButton(onClick = onOcr) {
                         Icon(
                             Icons.Filled.TextFields,

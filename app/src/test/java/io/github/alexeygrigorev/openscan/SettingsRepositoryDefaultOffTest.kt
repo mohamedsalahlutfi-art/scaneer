@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -42,12 +41,19 @@ class SettingsRepositoryDefaultOffTest {
     }
 
     @Test
-    fun `setter persists the opt-in and it can be turned off again`() = runBlocking {
+    fun `offline build never lets the upload opt-in turn on`() = runBlocking {
+        // SmartScan Pro is strictly offline: no setting may authorize uploads.
         val repository = repositoryInTempDir()
         assertFalse(repository.feedbackUploadEnabled.first())
         repository.setFeedbackUploadEnabled(true)
-        assertTrue(repository.feedbackUploadEnabled.first())
-        repository.setFeedbackUploadEnabled(false)
         assertFalse(repository.feedbackUploadEnabled.first())
+    }
+
+    @Test
+    fun `capture speed defaults to balanced and persists`() = runBlocking {
+        val repository = repositoryInTempDir()
+        assertEquals("balanced", repository.captureSpeed.first())
+        repository.setCaptureSpeed("turbo")
+        assertEquals("turbo", repository.captureSpeed.first())
     }
 }

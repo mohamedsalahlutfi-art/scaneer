@@ -14,8 +14,10 @@ import io.github.alexeygrigorev.openscan.data.SettingsRepository
 import io.github.alexeygrigorev.openscan.scan.DocumentDuplicateDetector
 import io.github.alexeygrigorev.openscan.scan.DocumentFingerprint
 import io.github.alexeygrigorev.openscan.scan.CaptureRefine
+import io.github.alexeygrigorev.openscan.scan.CaptureSpeed
 import io.github.alexeygrigorev.openscan.scan.Images
 import io.github.alexeygrigorev.openscan.scan.QuadPlausibility
+import io.github.alexeygrigorev.openscan.scan.ScanFilter
 import io.github.alexeygrigorev.openscan.scan.ScanPipeline
 import java.io.File
 import org.json.JSONArray
@@ -64,6 +66,8 @@ data class CapturedPage(
     val rotation: Int = 0,
     val version: Int = 0,
     val fingerprint: DocumentFingerprint? = null,
+    /** Per-page enhancement override ([ScanFilter.id]); null follows the batch filter. */
+    val filter: String? = null,
 ) {
     override fun equals(other: Any?) =
         other is CapturedPage && other.id == id && other.version == version
@@ -109,6 +113,12 @@ class BatchScanViewModel(
     val detection = MutableStateFlow<FrameDetection?>(null)
     val duplicateWarning = MutableStateFlow<DuplicateWarning?>(null)
     val boundaryConfirmation = MutableStateFlow<BoundaryConfirmation?>(null)
+
+    /** "All pages" enhancement for this batch; null means the app default. */
+    val batchFilter = MutableStateFlow<String?>(null)
+
+    /** App-wide default enhancement, shown as the batch filter until one is picked. */
+    val appFilterDefault: Flow<String> = settings.filterDefault
 
     /** Bumped once per captured page: the UI flashes and buzzes on change. */
     val snapTick = MutableStateFlow(0)
@@ -159,12 +169,24 @@ class BatchScanViewModel(
 
     private val thumbCache = object : LruCache<Long, ImageBitmap>(20) {}
 
-    init { restoreSession() }
+    /**
+     * Active speed profile. Read on the camera analyzer thread for every
+     * frame, so it is a cached volatile copy of the DataStore value.
+     */
+    @Volatile
+    private var speed: CaptureSpeed = CaptureSpeed.DEFAULT
+
+    init {
+        restoreSession()
+        viewModelScope.launch {
+            settings.captureSpeed.collect { speed = CaptureSpeed.fromId(it) }
+        }
+    }
 
     // Cheap gate the analyzer consults before decoding a frame at all.
     fun wantsFrame(nowElapsed: Long = SystemClock.elapsedRealtime()): Boolean =
         phase.value == Phase.CAPTURE && duplicateWarning.value == null && boundaryConfirmation.value == null && !capturing.get() &&
-            nowElapsed - lastAnalysisAt >= ANALYSIS_INTERVAL_MS
+            nowElapsed - lastAnalysisAt >= speed.analysisIntervalMs
 
     /**
      * Upright analysis frame from the camera. Runs detection on the detect
@@ -182,9 +204,10 @@ class BatchScanViewModel(
                 lastQuadFrame = bitmap.width to bitmap.height
                 if (quad == null) lostSinceLastCapture = true
                 stableCount = if (stable) stableCount + 1 else 0
-                val stableEnough = stableCount >= STABLE_FRAMES
+                val profile = speed
+                val stableEnough = stableCount >= profile.stableFrames
                 detection.value = FrameDetection(quad, bitmap.width, bitmap.height, stableEnough)
-                val cooldownOver = nowElapsed - lastCaptureAt >= CAPTURE_COOLDOWN_MS
+                val cooldownOver = nowElapsed - lastCaptureAt >= profile.cooldownMs
                 val sceneChanged = lostSinceLastCapture ||
                     movedEnough(
                         quad, lastQuadFrame,
@@ -232,7 +255,7 @@ class BatchScanViewModel(
             var boundedFrame: Bitmap? = null
             try {
                 // Bound the stored frame like every other page import.
-                val still = downscaleMax(stillFull, SAVE_MAX_DIM)
+                val still = downscaleMax(stillFull, speed.saveMaxDim)
                 boundedFrame = still
                 val live = scaleQuad(lastQuad, lastQuadFrame, still.width, still.height)
                 // Post-capture refinement (item 8b): a slower full-res pass
@@ -285,11 +308,20 @@ class BatchScanViewModel(
         }
     }
 
-    /** Accept the proposed crop; it can still be fine-tuned in Review. */
-    fun confirmBoundary() {
+    /**
+     * Accept the uncertain capture. [editedQuad] carries corners the user
+     * dragged on the confirmation screen; [useFullFrame] keeps the whole
+     * photo uncropped. Either way the page can still be edited in Review.
+     */
+    fun confirmBoundary(editedQuad: FloatArray? = null, useFullFrame: Boolean = false) {
         val pending = boundaryConfirmation.value ?: return
         boundaryConfirmation.value = null
-        acceptPage(pending.page)
+        val page = when {
+            useFullFrame -> pending.page.copy(quad = null, needsCheck = false, userEdited = true)
+            editedQuad != null -> pending.page.copy(quad = editedQuad, needsCheck = false, userEdited = true)
+            else -> pending.page
+        }
+        acceptPage(page)
     }
 
     /** Reject an uncertain capture without deleting previously accepted pages. */
@@ -369,6 +401,20 @@ class BatchScanViewModel(
     fun clearQuad(id: Long) =
         editPage(id) { it.copy(quad = null, needsCheck = false, userEdited = true) }
 
+    /** Per-page filter override; null makes the page follow the batch filter. */
+    fun setPageFilter(id: Long, filterId: String?) {
+        val page = pages.value.firstOrNull { it.id == id } ?: return
+        if (page.filter != filterId) editPage(id) { it.copy(filter = filterId) }
+    }
+
+    /** "All pages" filter: applies to the whole batch and clears page overrides. */
+    fun setBatchFilter(filterId: String) {
+        batchFilter.value = filterId
+        pages.value = pages.value.map { it.copy(filter = null, version = it.version + 1) }
+        thumbCache.evictAll()
+        persistSession()
+    }
+
     /** Re-runs the detector on the stored frame (review editor's Auto button). */
     fun autoDetect(id: Long) {
         val page = pages.value.firstOrNull { it.id == id } ?: return
@@ -402,8 +448,10 @@ class BatchScanViewModel(
         thumbCache.get(page.id)?.let { return it }
         return withContext(Dispatchers.IO) {
             // The review shows the same enhancement the export will embed.
-            val filter = io.github.alexeygrigorev.openscan.scan.ScanFilter.fromId(
-                runCatching { settings.filterDefault.first() }.getOrNull()
+            val filter = ScanFilter.effective(
+                page.filter,
+                batchFilter.value,
+                runCatching { settings.filterDefault.first() }.getOrNull(),
             )
             val rendered = renderPage(page, THUMB_MAX_DIM) ?: return@withContext null
             val enhanced = if (filter == io.github.alexeygrigorev.openscan.scan.ScanFilter.ORIGINAL) {
@@ -434,6 +482,15 @@ class BatchScanViewModel(
                 val documentId = appendTo
                     ?.takeIf { repository.getDocument(it) != null }
                     ?: repository.createDocument()
+                val isNewDocument = documentId != appendTo
+                // New document: the batch filter becomes the document filter
+                // (and the app default, like choosing it on the document).
+                // Appending: apply it per page so older pages keep theirs.
+                val batch = batchFilter.value
+                if (batch != null && isNewDocument) {
+                    repository.setDocumentFilter(documentId, batch)
+                    runCatching { settings.setFilterDefault(batch) }
+                }
                 val list = pages.value
                 var failed = 0
                 // Read once: the original frames move into permanent storage
@@ -446,13 +503,13 @@ class BatchScanViewModel(
                         // Disk I/O and full-resolution OpenCV work must not run
                         // on the UI thread, especially with hundreds of pages.
                         withContext(Dispatchers.IO) {
-                            val source = Images.decodeScaled(page.file, SAVE_MAX_DIM)
+                            val source = Images.decodeScaled(page.file, CaptureSpeed.MAX_SAVE_DIM)
                                 ?: throw IllegalStateException("cannot decode ${page.file.name}")
                             var rendered: Bitmap? = null
                             try {
                                 val completed = renderPageInto(source, page)
                                 rendered = completed
-                                repository.importPageBitmap(
+                                val saved = repository.importPageBitmap(
                                     documentId,
                                     completed,
                                     detected = true,
@@ -463,6 +520,8 @@ class BatchScanViewModel(
                                     imageWidth = page.frameWidth,
                                     imageHeight = page.frameHeight,
                                 )
+                                val override = page.filter ?: batch?.takeIf { !isNewDocument }
+                                if (override != null) repository.setPageFilter(saved.id, override)
                             } finally {
                                 rendered?.takeIf { it !== source }?.recycle()
                                 source.recycle()
@@ -529,6 +588,7 @@ class BatchScanViewModel(
                     .put("rotation", page.rotation).put("edited", page.userEdited)
                     .put("check", page.needsCheck).put("quad", floats(page.quad))
                     .put("auto", floats(page.autoQuad)).put("refined", floats(page.refinedQuad))
+                page.filter?.let { item.put("filter", it) }
                 page.fingerprint?.let { fp ->
                     item.put("fpH", fp.horizontal.toString())
                         .put("fpV", fp.vertical.toString())
@@ -538,6 +598,7 @@ class BatchScanViewModel(
                 entries.put(item)
             }
             data.put("pages", entries)
+            batchFilter.value?.let { data.put("batchFilter", it) }
             val tmp = File(batchDir, "session.json.tmp")
             tmp.writeText(data.toString())
             check(tmp.renameTo(sessionFile)) { "Unable to save scan session" }
@@ -572,11 +633,13 @@ class BatchScanViewModel(
                         needsCheck = item.optBoolean("check", false),
                         userEdited = item.optBoolean("edited", false),
                         rotation = item.optInt("rotation", 0), fingerprint = fp,
+                        filter = item.optString("filter", "").takeIf { it.isNotEmpty() },
                     ))
                 }
             }
             pages.value = restored
             pageCount.value = restored.size
+            batchFilter.value = root.optString("batchFilter", "").takeIf { it.isNotEmpty() }
             nextId = maxOf(root.optLong("nextId", 1L), (restored.maxOfOrNull { it.id } ?: 0L) + 1)
             // The old sheet must be removed/replaced before another auto-snap.
             lostSinceLastCapture = true

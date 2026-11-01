@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -74,6 +75,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -95,10 +97,13 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.alexeygrigorev.openscan.OpenScanApp
+import io.github.alexeygrigorev.openscan.scan.ScanFilter
 import io.github.alexeygrigorev.openscan.util.formatPageCount
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -195,20 +200,7 @@ fun BatchScanRoute(
     }
 
     boundaryConfirmation?.let { pending ->
-        AlertDialog(
-            onDismissRequest = { /* Require explicit choice. */ },
-            title = { Text("Confirm document boundaries") },
-            text = { Text(
-                pending.reason + " Confirm the proposed crop or retake this photo. " +
-                    "For precise corner dragging, use the page editor in Review before exporting."
-            ) },
-            confirmButton = {
-                TextButton(onClick = batchViewModel::confirmBoundary) { Text("Confirm boundaries") }
-            },
-            dismissButton = {
-                TextButton(onClick = batchViewModel::retakeBoundary) { Text("Retake") }
-            },
-        )
+        BoundaryConfirmScreen(viewModel = batchViewModel, pending = pending)
     }
 
     duplicateWarning?.let { warning ->
@@ -548,9 +540,21 @@ private fun ReviewPhase(
     val busy by viewModel.busy.collectAsState()
     val progress by viewModel.saveProgress.collectAsState()
     val error by viewModel.error.collectAsState()
+    val batchFilter by viewModel.batchFilter.collectAsState()
+    val appFilterDefault by viewModel.appFilterDefault.collectAsState(initial = ScanFilter.DEFAULT.id)
     var editing by remember { mutableStateOf<Long?>(null) }
 
     BackHandler(enabled = busy) {}
+
+    val saveBatch: (share: Boolean) -> Unit = { share ->
+        viewModel.save { documentId, added, failed ->
+            BatchImport.summary.value = added to failed
+            // The document screen exports with the chosen filters and opens
+            // the share sheet straight away.
+            BatchImport.sharePdf.value = share && added > 0
+            onDone(documentId, added, failed)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -563,22 +567,46 @@ private fun ReviewPhase(
                 },
                 actions = {
                     TextButton(
-                        onClick = {
-                            viewModel.save { documentId, added, failed ->
-                                BatchImport.summary.value = added to failed
-                                onDone(documentId, added, failed)
-                            }
-                        },
+                        onClick = { saveBatch(false) },
                         enabled = !busy && pages.isNotEmpty(),
                     ) { Text("Save") }
                 },
             )
         },
+        bottomBar = {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                OutlinedButton(
+                    onClick = { saveBatch(false) },
+                    enabled = !busy && pages.isNotEmpty(),
+                    modifier = Modifier.weight(1f),
+                ) { Text("Save") }
+                Button(
+                    onClick = { saveBatch(true) },
+                    enabled = !busy && pages.isNotEmpty(),
+                    modifier = Modifier.weight(1.4f),
+                ) {
+                    Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("Save & share PDF", modifier = Modifier.padding(start = 8.dp))
+                }
+            }
+        },
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+          Column(modifier = Modifier.fillMaxSize()) {
+            FilterChipsRow(
+                label = "Filter for all pages (open a page to change only that one)",
+                selectedId = batchFilter ?: appFilterDefault,
+                onPick = { id -> if (id != null) viewModel.setBatchFilter(id) },
+                modifier = Modifier.padding(top = 8.dp),
+            )
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxWidth().weight(1f),
                 contentPadding = PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -591,6 +619,7 @@ private fun ReviewPhase(
                     )
                 }
             }
+          }
 
             if (busy) {
                 Surface(
@@ -701,6 +730,18 @@ private fun PageThumbnail(
                         .padding(horizontal = 4.dp, vertical = 2.dp),
                 )
             }
+            page.filter?.let { own ->
+                Text(
+                    ScanFilter.fromId(own).title,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(4.dp)
+                        .background(Color(0xFF0A84FF).copy(alpha = 0.85f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                )
+            }
             IconButton(
                 onClick = { viewModel.deletePage(page.id) },
                 modifier = Modifier
@@ -718,7 +759,7 @@ private fun PageThumbnail(
     }
 }
 
-/** Full-screen editor: drag the quad corners, re-detect, rotate, delete. */
+/** Full-screen editor: drag the quad corners, re-detect, rotate, delete, pick this page's filter. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PageEditor(
@@ -734,8 +775,9 @@ private fun PageEditor(
     var quad by remember(page.id) {
         mutableStateOf(page.quad ?: defaultQuad(page.frameWidth, page.frameHeight))
     }
-    var dragCorner by remember(page.id) { mutableStateOf(-1) }
     LaunchedEffect(page.id, page.version) { page.quad?.let { quad = it } }
+    // Filter choice is local too, so changing it never resets dragged corners.
+    var pageFilter by remember(page.id) { mutableStateOf(page.filter) }
 
     BackHandler { onDismiss() }
 
@@ -765,26 +807,36 @@ private fun PageEditor(
             )
         },
         bottomBar = {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Button(
-                    onClick = {
-                        viewModel.setQuad(page.id, quad)
-                        onDismiss()
-                    },
-                    modifier = Modifier.weight(1f),
-                ) { Text("Done") }
-                OutlinedButton(
-                    onClick = {
-                        viewModel.clearQuad(page.id)
-                        onDismiss()
-                    },
-                    modifier = Modifier.weight(1f),
-                ) { Text("Use full frame") }
+            Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                FilterChipsRow(
+                    label = "Filter for this page only",
+                    selectedId = pageFilter,
+                    onPick = { pageFilter = it },
+                    inheritLabel = "Same as all pages",
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Button(
+                        onClick = {
+                            viewModel.setPageFilter(page.id, pageFilter)
+                            viewModel.setQuad(page.id, quad)
+                            onDismiss()
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Done") }
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.setPageFilter(page.id, pageFilter)
+                            viewModel.clearQuad(page.id)
+                            onDismiss()
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Use full frame") }
+                }
             }
         },
     ) { padding ->
@@ -799,108 +851,221 @@ private fun PageEditor(
             if (bmp == null) {
                 CircularProgressIndicator()
             } else {
-                // Magnifier source: zoomed crop around the dragged corner,
-                // recomputed as the corner moves (cheap 260 px crop).
-                val frame = bmp
-                val loupeBitmap = remember(quad, dragCorner, frame) {
-                    if (dragCorner in 0..3) {
-                        cornerLoupe(frame, quad, dragCorner, page.frameWidth, page.frameHeight)
+                CornerEditor(
+                    bmp = bmp,
+                    quad = quad,
+                    frameWidth = page.frameWidth,
+                    frameHeight = page.frameHeight,
+                    onQuadChange = { quad = it },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Shown right after an uncertain capture (no reliable edges, or refinement
+ * flagged the corners): the photo with draggable corners and a magnifier,
+ * so the crop is fixed on the spot. Auto-capture stays paused until the
+ * user confirms, keeps the full photo, or retakes.
+ */
+@Composable
+private fun BoundaryConfirmScreen(
+    viewModel: BatchScanViewModel,
+    pending: BoundaryConfirmation,
+) {
+    val page = pending.page
+    var frame by remember(page.id) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(page.id) { frame = viewModel.editorFrame(page) }
+    var quad by remember(page.id) {
+        mutableStateOf(page.quad ?: defaultQuad(page.frameWidth, page.frameHeight))
+    }
+    var edited by remember(page.id) { mutableStateOf(page.quad == null) }
+
+    Dialog(
+        onDismissRequest = { /* Require an explicit choice. */ },
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+        ),
+    ) {
+        Surface(color = Color.Black, modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                    Text(
+                        "Check the page edges",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                    )
+                    Text(
+                        pending.reason + " Drag the green corners onto the paper corners, then confirm.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                Box(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    val bmp = frame
+                    if (bmp == null) {
+                        CircularProgressIndicator()
                     } else {
-                        null
-                    }
-                }
-                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                    val (scale, off) = fitTransform(
-                        bmp.width, bmp.height,
-                        constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat(),
-                    )
-                    val density = LocalDensity.current
-                    val imageWidth = with(density) { (bmp.width * scale).toDp() }
-                    val imageHeight = with(density) { (bmp.height * scale).toDp() }
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = null,
-                        contentScale = ContentScale.FillBounds,
-                        modifier = Modifier
-                            .offset { IntOffset(off.x.roundToInt(), off.y.roundToInt()) }
-                            .size(imageWidth, imageHeight),
-                    )
-                    Canvas(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .pointerInput(page.id) {
-                                detectDragGestures(
-                                    onDragStart = { pos ->
-                                        dragCorner = nearestCorner(quad, pos, scale, off)
-                                    },
-                                    onDrag = { change, amount ->
-                                        change.consume()
-                                        val corner = dragCorner
-                                        if (corner >= 0) {
-                                            val q = quad.copyOf()
-                                            q[corner * 2] = (q[corner * 2] + amount.x / scale)
-                                                .coerceIn(0f, page.frameWidth.toFloat())
-                                            q[corner * 2 + 1] = (q[corner * 2 + 1] + amount.y / scale)
-                                                .coerceIn(0f, page.frameHeight.toFloat())
-                                            quad = q
-                                        }
-                                    },
-                                    onDragEnd = { dragCorner = -1 },
-                                    onDragCancel = { dragCorner = -1 },
-                                )
+                        CornerEditor(
+                            bmp = bmp,
+                            quad = quad,
+                            frameWidth = page.frameWidth,
+                            frameHeight = page.frameHeight,
+                            onQuadChange = {
+                                quad = it
+                                edited = true
                             },
-                    ) {
-                        val q = quad
-                        val pts = FloatArray(8) { i ->
-                            if (i % 2 == 0) q[i] * scale + off.x else q[i] * scale + off.y
-                        }
-                        drawPath(
-                            path = quadPath(pts),
-                            color = Color(0xFF4CD964),
-                            style = Stroke(width = 3.dp.toPx()),
-                        )
-                        for (i in 0 until 4) {
-                            val c = Offset(pts[i * 2], pts[i * 2 + 1])
-                            drawCircle(color = Color.White, radius = 10.dp.toPx(), center = c)
-                            drawCircle(color = Color(0xFF4CD964), radius = 7.dp.toPx(), center = c)
-                        }
-                    }
-                }
-                // Magnifier loupe (item 3): while a corner handle is dragged,
-                // a zoomed circular view around it with a crosshair, parked
-                // at the top so the finger never covers it.
-                val loupe = loupeBitmap
-                if (loupe != null) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(top = 64.dp)
-                            .size(136.dp)
-                            .clip(CircleShape)
-                            .border(3.dp, Color.White, CircleShape)
-                            .background(Color.Black),
-                    ) {
-                        Image(
-                            bitmap = loupe.asImageBitmap(),
-                            contentDescription = "Magnified corner",
-                            contentScale = ContentScale.FillBounds,
                             modifier = Modifier.fillMaxSize(),
                         )
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            val c = Offset(size.width / 2f, size.height / 2f)
-                            val arm = 30.dp.toPx()
-                            drawLine(
-                                Color(0xFF4CD964),
-                                Offset(c.x - arm, c.y), Offset(c.x + arm, c.y),
-                                strokeWidth = 3f,
-                            )
-                            drawLine(
-                                Color(0xFF4CD964),
-                                Offset(c.x, c.y - arm), Offset(c.x, c.y + arm),
-                                strokeWidth = 3f,
-                            )
-                        }
                     }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedButton(
+                        onClick = { viewModel.retakeBoundary() },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Retake") }
+                    TextButton(
+                        onClick = { viewModel.confirmBoundary(useFullFrame = true) },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Full photo") }
+                    Button(
+                        onClick = { viewModel.confirmBoundary(editedQuad = if (edited) quad else null) },
+                        modifier = Modifier.weight(1.2f),
+                    ) { Text("Confirm") }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Photo with a draggable quad (TL, TR, BR, BL in frame coordinates) and a
+ * magnifier loupe over the dragged corner. Drags accumulate in a private
+ * working copy, so fast moves never drop deltas between recompositions.
+ */
+@Composable
+private fun CornerEditor(
+    bmp: Bitmap,
+    quad: FloatArray,
+    frameWidth: Int,
+    frameHeight: Int,
+    onQuadChange: (FloatArray) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var dragCorner by remember { mutableStateOf(-1) }
+    val latestQuad by rememberUpdatedState(quad)
+    val latestOnChange by rememberUpdatedState(onQuadChange)
+    val working = remember { arrayOfNulls<FloatArray>(1) }
+    val loupeBitmap = remember(quad, dragCorner, bmp) {
+        if (dragCorner in 0..3) cornerLoupe(bmp, quad, dragCorner, frameWidth, frameHeight) else null
+    }
+
+    Box(modifier = modifier) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val (scale, off) = fitTransform(
+                bmp.width, bmp.height,
+                constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat(),
+            )
+            // Quad lives in frame space; the decoded bitmap may be smaller.
+            val frameScale = scale * bmp.width / frameWidth.coerceAtLeast(1)
+            val density = LocalDensity.current
+            val imageWidth = with(density) { (bmp.width * scale).toDp() }
+            val imageHeight = with(density) { (bmp.height * scale).toDp() }
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier
+                    .offset { IntOffset(off.x.roundToInt(), off.y.roundToInt()) }
+                    .size(imageWidth, imageHeight),
+            )
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(bmp, frameScale, off) {
+                        detectDragGestures(
+                            onDragStart = { pos ->
+                                working[0] = latestQuad.copyOf()
+                                dragCorner = nearestCorner(latestQuad, pos, frameScale, off)
+                            },
+                            onDrag = { change, amount ->
+                                change.consume()
+                                val corner = dragCorner
+                                val q = working[0]
+                                if (corner >= 0 && q != null) {
+                                    q[corner * 2] = (q[corner * 2] + amount.x / frameScale)
+                                        .coerceIn(0f, frameWidth.toFloat())
+                                    q[corner * 2 + 1] = (q[corner * 2 + 1] + amount.y / frameScale)
+                                        .coerceIn(0f, frameHeight.toFloat())
+                                    latestOnChange(q.copyOf())
+                                }
+                            },
+                            onDragEnd = { dragCorner = -1; working[0] = null },
+                            onDragCancel = { dragCorner = -1; working[0] = null },
+                        )
+                    },
+            ) {
+                val q = quad
+                val pts = FloatArray(8) { i ->
+                    if (i % 2 == 0) q[i] * frameScale + off.x else q[i] * frameScale + off.y
+                }
+                drawPath(
+                    path = quadPath(pts),
+                    color = Color(0xFF4CD964),
+                    style = Stroke(width = 3.dp.toPx()),
+                )
+                for (i in 0 until 4) {
+                    val c = Offset(pts[i * 2], pts[i * 2 + 1])
+                    drawCircle(color = Color.White, radius = 12.dp.toPx(), center = c)
+                    drawCircle(color = Color(0xFF4CD964), radius = 8.dp.toPx(), center = c)
+                }
+            }
+        }
+        // Magnifier loupe (item 3): while a corner handle is dragged, a
+        // zoomed circular view around it with a crosshair, parked at the top
+        // so the finger never covers it.
+        val loupe = loupeBitmap
+        if (loupe != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 16.dp)
+                    .size(136.dp)
+                    .clip(CircleShape)
+                    .border(3.dp, Color.White, CircleShape)
+                    .background(Color.Black),
+            ) {
+                Image(
+                    bitmap = loupe.asImageBitmap(),
+                    contentDescription = "Magnified corner",
+                    contentScale = ContentScale.FillBounds,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val c = Offset(size.width / 2f, size.height / 2f)
+                    val arm = 30.dp.toPx()
+                    drawLine(
+                        Color(0xFF4CD964),
+                        Offset(c.x - arm, c.y), Offset(c.x + arm, c.y),
+                        strokeWidth = 3f,
+                    )
+                    drawLine(
+                        Color(0xFF4CD964),
+                        Offset(c.x, c.y - arm), Offset(c.x, c.y + arm),
+                        strokeWidth = 3f,
+                    )
                 }
             }
         }

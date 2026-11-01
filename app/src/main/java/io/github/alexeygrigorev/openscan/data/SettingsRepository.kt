@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import java.io.File
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 
 /**
@@ -62,6 +63,15 @@ interface SettingsRepository {
     val autoCaptureEnabled: Flow<Boolean>
 
     suspend fun setAutoCaptureEnabled(enabled: Boolean)
+
+    /**
+     * Batch camera speed profile id ([io.github.alexeygrigorev.openscan.scan.CaptureSpeed]).
+     * Defaults keep test fakes compiling; the DataStore repository persists it.
+     */
+    val captureSpeed: Flow<String>
+        get() = flowOf(DataStoreSettingsRepository.DEFAULT_CAPTURE_SPEED)
+
+    suspend fun setCaptureSpeed(speedId: String) {}
 }
 
 /** DataStore-backed [SettingsRepository]; the only reader/writer of the pref. */
@@ -105,7 +115,17 @@ class DataStoreSettingsRepository(
         dataStore.edit { prefs -> prefs[AUTO_CAPTURE_ENABLED] = enabled }
     }
 
+    override val captureSpeed: Flow<String> =
+        dataStore.data.map { prefs -> prefs[CAPTURE_SPEED] ?: DEFAULT_CAPTURE_SPEED }
+
+    override suspend fun setCaptureSpeed(speedId: String) {
+        dataStore.edit { prefs -> prefs[CAPTURE_SPEED] = speedId }
+    }
+
     companion object {
+        /** Balanced speed/accuracy is the default scanning profile. */
+        const val DEFAULT_CAPTURE_SPEED = "balanced"
+
         /** Opt-in telemetry is off unless the user turns it on. */
         const val DEFAULT_FEEDBACK_UPLOAD_ENABLED = false
 
@@ -126,6 +146,7 @@ class DataStoreSettingsRepository(
         private val DEVELOPER_MODE_ENABLED = booleanPreferencesKey("developer_mode_enabled")
         private val FILTER_DEFAULT = stringPreferencesKey("filter_default")
         private val AUTO_CAPTURE_ENABLED = booleanPreferencesKey("auto_capture_enabled")
+        private val CAPTURE_SPEED = stringPreferencesKey("capture_speed")
 
         /** File-backed preference DataStore used by [io.github.alexeygrigorev.openscan.data.AppContainer]. */
         fun createDefaultDataStore(context: Context): DataStore<Preferences> {

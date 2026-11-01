@@ -9,7 +9,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -33,6 +36,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.alexeygrigorev.openscan.data.DocumentsRepository
 import io.github.alexeygrigorev.openscan.data.SettingsRepository
+import io.github.alexeygrigorev.openscan.scan.CaptureSpeed
 import io.github.alexeygrigorev.openscan.scan.ScanFilter
 import io.github.alexeygrigorev.openscan.scan.UploadStats
 import io.github.alexeygrigorev.openscan.update.ReleaseChecker
@@ -94,6 +98,14 @@ class SettingsViewModel(
         viewModelScope.launch { settings.setAutoCaptureEnabled(enabled) }
     }
 
+    /** Batch camera speed profile (Turbo / Balanced / Maximum quality). */
+    val captureSpeed: StateFlow<String> = settings.captureSpeed
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), CaptureSpeed.DEFAULT.id)
+
+    fun setCaptureSpeed(speedId: String) {
+        viewModelScope.launch { settings.setCaptureSpeed(speedId) }
+    }
+
     /** Visible developer-share status (item 0). */
     val uploadStats: StateFlow<UploadStats> = repository.observeUploadStats()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UploadStats())
@@ -115,6 +127,8 @@ fun SettingsScreen(
     val developerMode by viewModel.developerModeEnabled.collectAsState()
     val filterDefault by viewModel.filterDefault.collectAsState()
     val autoCapture by viewModel.autoCaptureEnabled.collectAsState()
+    val captureSpeed by viewModel.captureSpeed.collectAsState()
+    var speedPickerOpen by remember { mutableStateOf(false) }
     val uploadStats by viewModel.uploadStats.collectAsState()
     val updateState by updateMonitor.state.collectAsState()
     val context = LocalContext.current
@@ -168,6 +182,14 @@ fun SettingsScreen(
             )
 
             SettingChoiceRow(
+                title = "Scanning speed",
+                description = CaptureSpeed.fromId(captureSpeed).description,
+                value = CaptureSpeed.fromId(captureSpeed).title,
+                onClick = { speedPickerOpen = true },
+                modifier = Modifier.padding(top = 16.dp),
+            )
+
+            SettingChoiceRow(
                 title = "Scan enhancement",
                 description = "Default filter for new pages. The last filter chosen " +
                     "for a document or page becomes the default.",
@@ -202,6 +224,43 @@ fun SettingsScreen(
                 },
             )
         }
+    }
+
+    if (speedPickerOpen) {
+        AlertDialog(
+            onDismissRequest = { speedPickerOpen = false },
+            title = { Text("Scanning speed") },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    for (speed in CaptureSpeed.entries) {
+                        val pick = {
+                            viewModel.setCaptureSpeed(speed.id)
+                            speedPickerOpen = false
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(onClick = pick)
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = captureSpeed == speed.id, onClick = pick)
+                            Column(modifier = Modifier.padding(start = 12.dp)) {
+                                Text(speed.title, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    speed.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { speedPickerOpen = false }) { Text("Close") }
+            },
+        )
     }
 
     if (filterPickerOpen) {

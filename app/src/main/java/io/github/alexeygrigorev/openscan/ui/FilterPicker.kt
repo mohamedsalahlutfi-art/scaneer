@@ -1,11 +1,15 @@
 package io.github.alexeygrigorev.openscan.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
@@ -79,6 +83,51 @@ private fun FilterRow(
                     subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One-tap enhancement chooser shown inline (no dialog): a scrollable row of
+ * chips, one per filter. With [inheritLabel] a leading chip clears the
+ * override (null) so the page follows the "all pages" choice again.
+ */
+@Composable
+fun FilterChipsRow(
+    label: String,
+    selectedId: String?,
+    onPick: (String?) -> Unit,
+    modifier: Modifier = Modifier,
+    inheritLabel: String? = null,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp),
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (inheritLabel != null) {
+                FilterChip(
+                    selected = selectedId == null,
+                    onClick = { onPick(null) },
+                    label = { Text(inheritLabel) },
+                )
+            }
+            for (filter in ScanFilter.entries) {
+                FilterChip(
+                    selected = selectedId == filter.id,
+                    onClick = { onPick(filter.id) },
+                    label = { Text(filter.title) },
                 )
             }
         }

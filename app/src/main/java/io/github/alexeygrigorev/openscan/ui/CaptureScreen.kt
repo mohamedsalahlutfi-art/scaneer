@@ -42,6 +42,9 @@ import kotlinx.coroutines.launch
  */
 object BatchImport {
     val summary = MutableStateFlow<Pair<Int, Int>?>(null)
+
+    /** Set by "Save & share PDF": the document screen exports and shares once. */
+    val sharePdf = MutableStateFlow(false)
 }
 
 class CaptureViewModel(private val repository: DocumentsRepository) : ViewModel() {

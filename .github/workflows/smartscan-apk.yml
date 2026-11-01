@@ -19,11 +19,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      VERSION_CODE: ${{ 300 + github.run_number }}
-      VERSION_NAME: 3.${{ github.run_number }}.0
     steps:
       - uses: actions/checkout@v4
+
+      - name: Version from run number
+        run: |
+          echo "VERSION_CODE=$((300 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=3.${GITHUB_RUN_NUMBER}.0" >> "$GITHUB_ENV"
 
       - uses: actions/setup-java@v4
         with:

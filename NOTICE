@@ -1,0 +1,13 @@
+SmartScan Pro development fork
+
+Based on OpenScan, Copyright (c) 2026 Alexey Grigorev,
+licensed under the Apache License, Version 2.0; the unmodified upstream
+license is included as LICENSE.
+
+Modified files include: app label and ID; offline-only permissions;
+CameraX capture workflow and re-arm handling; batch-session persistence;
+suspected-duplicate review; image enhancement; large-batch processing;
+and automated build configuration.
+
+The document-duplicate implementation in this fork was written independently
+and is not an assertion that a visually similar document is truly identical.

@@ -275,7 +275,7 @@ class ReleaseCheckerTest {
     @Test
     fun `the endpoint is this repository's release feed`() {
         assertEquals(
-            "https://api.github.com/repos/alexeygrigorev/openscan/releases/latest",
+            "https://api.github.com/repos/mohamedsalahlutfi-art/scaneer/releases/latest",
             ReleaseChecker.RELEASES_API,
         )
         // The default fetch target must be a parseable URL.

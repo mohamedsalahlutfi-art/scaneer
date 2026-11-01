@@ -44,16 +44,26 @@ jobs:
           chmod +x ./gradlew
           ./gradlew :app:testFossDebugUnitTest --stacktrace --console=plain
 
+      # Release = R8-optimized and non-debuggable: much smoother UI and a
+      # smaller file than a debug build. Signed with the same key as before.
       - name: Build APK
-        run: ./gradlew :app:assembleFossDebug --stacktrace --console=plain
+        run: ./gradlew :app:assembleFossRelease --stacktrace --console=plain
 
       - name: Prepare APK
         run: |
-          APK=app/build/outputs/apk/foss/debug/app-foss-debug.apk
+          APK=app/build/outputs/apk/foss/release/app-foss-release.apk
           test -s "$APK"
           cp "$APK" "SmartScan-Pro-v${VERSION_NAME}.apk"
           cp "$APK" SmartScan-Pro.apk
           sha256sum SmartScan-Pro.apk > SmartScan-Pro.apk.sha256
+
+      - name: Verify APK (signature, version, size)
+        run: |
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          "$BT/apksigner" verify --print-certs SmartScan-Pro.apk | tee apk-verify.txt
+          "$BT/aapt2" dump badging SmartScan-Pro.apk | grep -E "^package:|^application-label:|native-code" | tee -a apk-verify.txt
+          ls -l SmartScan-Pro.apk | tee -a apk-verify.txt
+          grep -q "versionCode='${VERSION_CODE}'" apk-verify.txt
 
       - name: Upload APK (Actions artifact)
         uses: actions/upload-artifact@v4
@@ -62,6 +72,7 @@ jobs:
           path: |
             SmartScan-Pro.apk
             SmartScan-Pro.apk.sha256
+            apk-verify.txt
           retention-days: 30
           if-no-files-found: error
 

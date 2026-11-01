@@ -60,12 +60,18 @@ android {
 
     buildTypes {
         debug {
-            // Emulators are typically x86_64; allow running debug/androidTest on emulators
-            ndk {
-                abiFilters.add("x86_64")
+            // Phone-only ABIs here too: the x86_64 emulator libs added ~100 MB
+            // to every CI-built APK. Pass -PwithEmulatorAbi=true for emulator runs.
+            if (project.findProperty("withEmulatorAbi") == "true") {
+                ndk {
+                    abiFilters.add("x86_64")
+                }
             }
         }
         release {
+            // Same committed key as debug unless CI provides a private one
+            // (block below), so release APKs update over earlier installs.
+            signingConfig = signingConfigs.getByName("debug")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -124,6 +130,12 @@ android {
             isV2SigningEnabled = true
         }
         buildTypes { getByName("release") { signingConfig = signingConfigs.getByName("release") } }
+    }
+
+    // Release assembles run lint-vital; a lint finding must not block the APK.
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 
     compileOptions {

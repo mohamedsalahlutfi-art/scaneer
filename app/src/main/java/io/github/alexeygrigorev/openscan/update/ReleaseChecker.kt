@@ -220,7 +220,7 @@ class ReleaseChecker(
         private const val TAG = "ReleaseChecker"
 
         /** This app's release feed on GitHub. */
-        const val RELEASES_API = "https://api.github.com/repos/alexeygrigorev/openscan/releases/latest"
+        const val RELEASES_API = "https://api.github.com/repos/mohamedsalahlutfi-art/scaneer/releases/latest"
 
         private const val TIMEOUT_MS = 10_000
 

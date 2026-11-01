@@ -1,0 +1,21 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+/app/build
+.kotlin
+# release signing material never enters the repo
+*.jks
+*.keystore
+.secrets/
+# local test corpus (third-party images, licenses vary) stays out of the repo
+/testdata/
+
+# Stable SmartScan signing key (see app/build.gradle.kts)
+!app/smartscan-debug.keystore

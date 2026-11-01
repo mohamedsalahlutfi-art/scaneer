@@ -154,6 +154,7 @@ fun BatchScanRoute(
     val busy by batchViewModel.busy.collectAsState()
     val error by batchViewModel.error.collectAsState()
     val duplicateWarning by batchViewModel.duplicateWarning.collectAsState()
+    val boundaryConfirmation by batchViewModel.boundaryConfirmation.collectAsState()
 
     LaunchedEffect(Unit) {
         if (!granted) permissionLauncher.launch(permission)
@@ -191,6 +192,23 @@ fun BatchScanRoute(
             },
         )
         else -> ReviewPhase(viewModel = batchViewModel, onDone = onDone)
+    }
+
+    boundaryConfirmation?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { /* Require explicit choice. */ },
+            title = { Text("Confirm document boundaries") },
+            text = { Text(
+                pending.reason + " Confirm the proposed crop or retake this photo. " +
+                    "For precise corner dragging, use the page editor in Review before exporting."
+            ) },
+            confirmButton = {
+                TextButton(onClick = batchViewModel::confirmBoundary) { Text("Confirm boundaries") }
+            },
+            dismissButton = {
+                TextButton(onClick = batchViewModel::retakeBoundary) { Text("Retake") }
+            },
+        )
     }
 
     duplicateWarning?.let { warning ->

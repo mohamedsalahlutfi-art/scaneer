@@ -15,8 +15,9 @@ android {
         applicationId = "com.smartscan.pro"
         minSdk = 26
         targetSdk = 36
-        versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
-        versionName = System.getenv("VERSION_NAME") ?: "1.0.0-dev"
+        // CI passes the run number so every APK upgrades the previous one.
+        versionCode = (System.getenv("VERSION_CODE") ?: "300").toInt()
+        versionName = System.getenv("VERSION_NAME") ?: "3.0.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Opt-in telemetry endpoint (docs/PRIVACY.md). Both blank by default:
@@ -41,6 +42,19 @@ android {
         // Every phone that can run this app is arm64 or armv7.
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+    }
+
+    // One fixed signing key for every installable build, committed on
+    // purpose: GitHub Actions otherwise signs each run with a fresh random
+    // debug key, and Android refuses to install the new APK over the old one
+    // ("App not installed") until the user uninstalls and loses their scans.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("app/smartscan-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
         }
     }
 

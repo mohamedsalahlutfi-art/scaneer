@@ -75,6 +75,9 @@ data class CapturedPage(
 /** A possible repeat; review it explicitly. No page is removed automatically. */
 data class DuplicateWarning(val page: CapturedPage, val matchedPageNumber: Int)
 
+/** Suspends automatic capture until an uncertain crop is reviewed. */
+data class BoundaryConfirmation(val page: CapturedPage, val reason: String)
+
 data class FrameDetection(
     val quad: FloatArray?,
     val frameWidth: Int,
@@ -105,6 +108,7 @@ class BatchScanViewModel(
     val pageCount = MutableStateFlow(0)
     val detection = MutableStateFlow<FrameDetection?>(null)
     val duplicateWarning = MutableStateFlow<DuplicateWarning?>(null)
+    val boundaryConfirmation = MutableStateFlow<BoundaryConfirmation?>(null)
 
     /** Bumped once per captured page: the UI flashes and buzzes on change. */
     val snapTick = MutableStateFlow(0)
@@ -159,7 +163,7 @@ class BatchScanViewModel(
 
     // Cheap gate the analyzer consults before decoding a frame at all.
     fun wantsFrame(nowElapsed: Long = SystemClock.elapsedRealtime()): Boolean =
-        phase.value == Phase.CAPTURE && duplicateWarning.value == null && !capturing.get() &&
+        phase.value == Phase.CAPTURE && duplicateWarning.value == null && boundaryConfirmation.value == null && !capturing.get() &&
             nowElapsed - lastAnalysisAt >= ANALYSIS_INTERVAL_MS
 
     /**
@@ -205,7 +209,7 @@ class BatchScanViewModel(
 
     /** Manual shutter or auto trigger: one full-res still through the pipeline. */
     fun requestCapture() {
-        if (phase.value != Phase.CAPTURE || busy.value || duplicateWarning.value != null) return
+        if (phase.value != Phase.CAPTURE || busy.value || duplicateWarning.value != null || boundaryConfirmation.value != null) return
         if (!capturing.compareAndSet(false, true)) return
         if (pages.value.size >= HARD_MAX_PAGES) {
             capturing.set(false)
@@ -260,7 +264,14 @@ class BatchScanViewModel(
                     })
                 }
                 if (prior == null) {
-                    acceptPage(candidate)
+                    if (candidate.quad == null || candidate.needsCheck) {
+                        boundaryConfirmation.value = BoundaryConfirmation(
+                            candidate,
+                            if (candidate.quad == null) "No reliable page boundary was found." else "Please check the detected corners."
+                        )
+                    } else {
+                        acceptPage(candidate)
+                    }
                 } else {
                     duplicateWarning.value = DuplicateWarning(candidate, prior.pageNumber)
                 }
@@ -272,6 +283,21 @@ class BatchScanViewModel(
                 capturing.set(false)
             }
         }
+    }
+
+    /** Accept the proposed crop; it can still be fine-tuned in Review. */
+    fun confirmBoundary() {
+        val pending = boundaryConfirmation.value ?: return
+        boundaryConfirmation.value = null
+        acceptPage(pending.page)
+    }
+
+    /** Reject an uncertain capture without deleting previously accepted pages. */
+    fun retakeBoundary() {
+        val pending = boundaryConfirmation.value ?: return
+        boundaryConfirmation.value = null
+        pending.page.file.delete()
+        lostSinceLastCapture = true
     }
 
     /** Confirm a suspected repeat. Never silently discard it. */
@@ -461,6 +487,8 @@ class BatchScanViewModel(
     fun discard() {
         duplicateWarning.value?.page?.file?.delete()
         duplicateWarning.value = null
+        boundaryConfirmation.value?.page?.file?.delete()
+        boundaryConfirmation.value = null
         batchDir.deleteRecursively()
         pages.value = emptyList()
         pageCount.value = 0

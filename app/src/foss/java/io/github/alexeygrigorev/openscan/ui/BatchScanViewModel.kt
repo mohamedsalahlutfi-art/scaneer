@@ -13,6 +13,7 @@ import io.github.alexeygrigorev.openscan.data.DocumentsRepository
 import io.github.alexeygrigorev.openscan.data.SettingsRepository
 import io.github.alexeygrigorev.openscan.scan.DocumentDuplicateDetector
 import io.github.alexeygrigorev.openscan.scan.DocumentFingerprint
+import io.github.alexeygrigorev.openscan.scan.CaptureQuality
 import io.github.alexeygrigorev.openscan.scan.CaptureRefine
 import io.github.alexeygrigorev.openscan.scan.CaptureSpeed
 import io.github.alexeygrigorev.openscan.scan.Images
@@ -87,6 +88,8 @@ data class FrameDetection(
     val frameWidth: Int,
     val frameHeight: Int,
     val stable: Boolean,
+    /** Shadow / low-contrast / blur warning; auto-capture waits while set. */
+    val issue: String? = null,
 )
 
 /**
@@ -206,7 +209,10 @@ class BatchScanViewModel(
                 stableCount = if (stable) stableCount + 1 else 0
                 val profile = speed
                 val stableEnough = stableCount >= profile.stableFrames
-                detection.value = FrameDetection(quad, bitmap.width, bitmap.height, stableEnough)
+                // Quality gate only once the corners hold (cheap: ~10 ms on a
+                // 360x480 warp), so the moving-phone phase costs nothing.
+                val issue = if (quad != null && stableEnough) CaptureQuality.assess(bitmap, quad) else null
+                detection.value = FrameDetection(quad, bitmap.width, bitmap.height, stableEnough, issue?.message)
                 val cooldownOver = nowElapsed - lastCaptureAt >= profile.cooldownMs
                 val sceneChanged = lostSinceLastCapture ||
                     movedEnough(
@@ -218,7 +224,7 @@ class BatchScanViewModel(
                 // is the only trigger. The toggle read is DataStore-cached.
                 val autoOn = runCatching { settings.autoCaptureEnabled.first() }
                     .getOrDefault(false)
-                if (autoOn && stableEnough && cooldownOver && sceneChanged &&
+                if (autoOn && stableEnough && issue == null && cooldownOver && sceneChanged &&
                     pages.value.size < AUTO_CAPTURE_MAX_PAGES
                 ) {
                     requestCapture()

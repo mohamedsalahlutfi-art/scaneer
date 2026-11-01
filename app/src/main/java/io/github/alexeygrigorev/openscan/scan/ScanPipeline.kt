@@ -1766,6 +1766,10 @@ private object Perspective {
         val outW = max(32, min(maxEdge, max(top, bottom).roundToInt()))
         val outH = max(32, min(maxEdge, max(left, right).roundToInt()))
 
+        // OpenCV bicubic warp: sharper text and many times faster than the
+        // per-pixel Kotlin loop below, which stays as the fallback.
+        runCatching { warpWithOpenCv(src, quad, outW, outH) }.getOrNull()?.let { return it }
+
         // Solve the homography mapping destination rect corners → source quad.
         val dst = floatArrayOf(0f, 0f, outW.toFloat(), 0f, outW.toFloat(), outH.toFloat(), 0f, outH.toFloat())
         val hgt = homography(dst, quad) ?: return fallbackStretch(src, quad, outW, outH)
@@ -1784,6 +1788,38 @@ private object Perspective {
         }
         out.setPixels(pixels, 0, outW, 0, 0, outW, outH)
         return out
+    }
+
+    private fun warpWithOpenCv(src: Bitmap, quad: FloatArray, outW: Int, outH: Int): Bitmap? {
+        if (!OpenCVLoader.initLocal()) return null
+        val srcMat = Mat()
+        val dstMat = Mat()
+        val from = MatOfPoint2f(
+            org.opencv.core.Point(quad[0].toDouble(), quad[1].toDouble()),
+            org.opencv.core.Point(quad[2].toDouble(), quad[3].toDouble()),
+            org.opencv.core.Point(quad[4].toDouble(), quad[5].toDouble()),
+            org.opencv.core.Point(quad[6].toDouble(), quad[7].toDouble()),
+        )
+        val to = MatOfPoint2f(
+            org.opencv.core.Point(0.0, 0.0),
+            org.opencv.core.Point(outW - 1.0, 0.0),
+            org.opencv.core.Point(outW - 1.0, outH - 1.0),
+            org.opencv.core.Point(0.0, outH - 1.0),
+        )
+        try {
+            org.opencv.android.Utils.bitmapToMat(src, srcMat)
+            val m = Imgproc.getPerspectiveTransform(from, to)
+            Imgproc.warpPerspective(
+                srcMat, dstMat, m, Size(outW.toDouble(), outH.toDouble()),
+                Imgproc.INTER_CUBIC, org.opencv.core.Core.BORDER_REPLICATE,
+            )
+            m.release()
+            val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+            org.opencv.android.Utils.matToBitmap(dstMat, out)
+            return out
+        } finally {
+            srcMat.release(); dstMat.release(); from.release(); to.release()
+        }
     }
 
     private fun dist(ax: Float, ay: Float, bx: Float, by: Float) = hypot((bx - ax).toDouble(), (by - ay).toDouble()).toFloat()

@@ -18,6 +18,7 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.SurfaceOrientedMeteringPointFactory
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -116,6 +117,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The foss flavor's own batch capture (docs/FEATURES.md "In-app capture" +
@@ -291,17 +293,26 @@ private fun BatchCapturePhase(
             val provider = ProcessCameraProvider
                 .getInstance(context)
                 .await(ContextCompat.getMainExecutor(context))
-            val preview = Preview.Builder().build().also {
-                it.setSurfaceProvider(previewView.surfaceProvider)
-            }
+            // One aspect ratio (4:3, the sensor's native shape) for preview,
+            // analysis and still. Analysis used to be 16:9 while preview and
+            // still were 4:3, so the live outline sat off the paper and live
+            // corners were stretched wrongly onto the photo.
+            val ratio43 = AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY
+            val preview = Preview.Builder()
+                .setResolutionSelector(
+                    ResolutionSelector.Builder().setAspectRatioStrategy(ratio43).build()
+                )
+                .build()
+                .also { it.setSurfaceProvider(previewView.surfaceProvider) }
             val analysis = ImageAnalysis.Builder()
                 .setResolutionSelector(
                     ResolutionSelector.Builder()
+                        .setAspectRatioStrategy(ratio43)
                         .setResolutionStrategy(
                             // Enough resolution for the detector's 1000px
                             // working scale; the still is captured separately.
                             ResolutionStrategy(
-                                Size(1280, 720),
+                                Size(1280, 960),
                                 ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
                             )
                         )
@@ -312,6 +323,20 @@ private fun BatchCapturePhase(
                 .also { it.setAnalyzer(analyzerExecutor, FrameAnalyzer(viewModel)) }
             val imageCapture = ImageCapture.Builder()
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .setResolutionSelector(
+                    ResolutionSelector.Builder()
+                        .setAspectRatioStrategy(ratio43)
+                        .setResolutionStrategy(
+                            // ~12 MP 4:3: full sensor detail on most phones
+                            // without decoding 50-200 MP stills (OOM risk).
+                            ResolutionStrategy(
+                                Size(4032, 3024),
+                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+                            )
+                        )
+                        .build()
+                )
+                .setJpegQuality(97)
                 .build()
 
             viewModel.captureShutter = {
@@ -341,14 +366,36 @@ private fun BatchCapturePhase(
                 } else {
                     focusScope.launch {
                         try {
-                            val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
+                            // Meter AF/AE/AWB on the paper itself (centre of
+                            // the live quad), not the screen centre: a page
+                            // off-centre or a bright desk no longer skews
+                            // focus and exposure.
+                            val point = viewModel.detection.value
+                                ?.takeIf { it.quad != null && previewView.width > 0 && previewView.height > 0 }
+                                ?.let { det ->
+                                    val q = det.quad!!
+                                    val cx = (q[0] + q[2] + q[4] + q[6]) / 4f
+                                    val cy = (q[1] + q[3] + q[5] + q[7]) / 4f
+                                    val (sc, off) = fillCenterTransform(
+                                        det.frameWidth, det.frameHeight,
+                                        previewView.width.toFloat(), previewView.height.toFloat(),
+                                    )
+                                    previewView.meteringPointFactory.createPoint(cx * sc + off.x, cy * sc + off.y)
+                                }
+                                ?: SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(0.5f, 0.5f)
                             val action = FocusMeteringAction.Builder(
-                                factory.createPoint(0.5f, 0.5f),
-                                FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE,
-                            ).setAutoCancelDuration(2, java.util.concurrent.TimeUnit.SECONDS)
+                                point,
+                                FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE or
+                                    FocusMeteringAction.FLAG_AWB,
+                            ).setAutoCancelDuration(3, java.util.concurrent.TimeUnit.SECONDS)
                                 .build()
-                            cam.cameraControl.startFocusAndMetering(action)
-                            delay(450)
+                            val result = cam.cameraControl.startFocusAndMetering(action)
+                            // Shoot as soon as focus settles (fast on good
+                            // light) instead of a fixed 450 ms; capped wait.
+                            delay(120)
+                            withTimeoutOrNull(900) {
+                                result.await(ContextCompat.getMainExecutor(context))
+                            }
                         } catch (_: Throwable) {
                         }
                         shoot()
@@ -375,6 +422,11 @@ private fun BatchCapturePhase(
         // the FILL_CENTER preview view.
         val det = detection
         if (det?.quad != null) {
+            val quadColor = when {
+                det.issue != null -> Color(0xFFFF453A)
+                det.stable -> Color(0xFF4CD964)
+                else -> Color(0xFFFFD60A)
+            }
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val (scale, off) = fillCenterTransform(
                     det.frameWidth, det.frameHeight, size.width, size.height,
@@ -384,7 +436,7 @@ private fun BatchCapturePhase(
                 }
                 drawPath(
                     path = quadPath(pts),
-                    color = if (det.stable) Color(0xFF4CD964) else Color(0xFFFFD60A),
+                    color = quadColor,
                     style = Stroke(width = 4.dp.toPx()),
                 )
             }
@@ -437,6 +489,7 @@ private fun BatchCapturePhase(
 
             // Status chip: with auto-capture off the outline is only a hint.
             val status = when {
+                det?.issue != null -> det.issue
                 !autoOn && (det == null || det.quad == null) -> "Looking for a document…"
                 !autoOn -> "Tap Take photo to capture"
                 det == null || det.quad == null -> "Looking for a document…"

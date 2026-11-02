@@ -374,7 +374,8 @@ class BatchScanViewModel(
     }
 
     fun onCaptureFailed(t: Throwable) {
-        error.value = t.message ?: "Capture failed"
+        // "Camera is closed" after Stop is expected, not an error to show.
+        if (phase.value == Phase.CAPTURE) error.value = t.message ?: "Capture failed"
         capturing.set(false)
     }
 

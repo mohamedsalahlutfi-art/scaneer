@@ -91,6 +91,10 @@ android {
     productFlavors {
         create("play") {
             dimension = "distribution"
+            // Installs next to the foss app: capture runs in Google's ML Kit
+            // document scanner (robust edges on white-on-white, shadow removal).
+            applicationIdSuffix = ".google"
+            versionNameSuffix = "-google"
         }
         create("foss") {
             dimension = "distribution"

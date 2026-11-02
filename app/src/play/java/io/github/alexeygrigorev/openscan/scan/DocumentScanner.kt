@@ -38,5 +38,5 @@ object DocumentScanner {
         return result.pages.orEmpty().mapNotNull { page -> page.imageUri }
     }
 
-    const val MAX_PAGES = 50
+    const val MAX_PAGES = 100
 }

@@ -1,19 +1,18 @@
 package io.github.alexeygrigorev.openscan
 
 import io.github.alexeygrigorev.openscan.scan.JpegPdfWriter
-import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
-import javax.imageio.ImageIO
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class JpegPdfWriterTest {
 
-    private fun jpeg(w: Int, h: Int): ByteArray {
-        val img = BufferedImage(w, h, BufferedImage.TYPE_INT_RGB)
-        return ByteArrayOutputStream().also { ImageIO.write(img, "jpg", it) }.toByteArray()
-    }
+    // The writer embeds bytes verbatim and never parses them; a JPEG-shaped
+    // payload (SOI ... EOI) is enough to check the PDF structure.
+    private fun jpeg(w: Int, h: Int): ByteArray =
+        byteArrayOf(0xFF.toByte(), 0xD8.toByte()) + ByteArray(w + h) { (it % 200).toByte() } +
+            byteArrayOf(0xFF.toByte(), 0xD9.toByte())
 
     @Test
     fun `writes a structurally valid multi-page pdf with embedded jpegs`() {

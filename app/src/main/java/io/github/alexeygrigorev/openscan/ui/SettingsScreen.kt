@@ -98,6 +98,13 @@ class SettingsViewModel(
         viewModelScope.launch { settings.setAutoCaptureEnabled(enabled) }
     }
 
+    val googleScanner: StateFlow<Boolean> = settings.googleScannerEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    fun setGoogleScanner(enabled: Boolean) {
+        viewModelScope.launch { settings.setGoogleScannerEnabled(enabled) }
+    }
+
     /** Batch camera speed profile (Turbo / Balanced / Maximum quality). */
     val captureSpeed: StateFlow<String> = settings.captureSpeed
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), CaptureSpeed.DEFAULT.id)
@@ -128,6 +135,7 @@ fun SettingsScreen(
     val filterDefault by viewModel.filterDefault.collectAsState()
     val autoCapture by viewModel.autoCaptureEnabled.collectAsState()
     val captureSpeed by viewModel.captureSpeed.collectAsState()
+    val googleScanner by viewModel.googleScanner.collectAsState()
     var speedPickerOpen by remember { mutableStateOf(false) }
     val uploadStats by viewModel.uploadStats.collectAsState()
     val updateState by updateMonitor.state.collectAsState()
@@ -168,6 +176,17 @@ fun SettingsScreen(
             Text(
                 "SmartScan Pro scans stay on this device. No upload permission is requested.",
                 style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 16.dp),
+            )
+
+            SettingSwitchRow(
+                title = "Google scanner (recommended)",
+                description = "Capture with Google's document scanner: the most reliable " +
+                    "edge detection, even white paper on a white desk, with shadow removal. " +
+                    "Pages then open in SmartScan review for filters and PDF. Turn off to " +
+                    "use the SmartScan camera.",
+                checked = googleScanner,
+                onCheckedChange = { viewModel.setGoogleScanner(it) },
                 modifier = Modifier.padding(top = 16.dp),
             )
 

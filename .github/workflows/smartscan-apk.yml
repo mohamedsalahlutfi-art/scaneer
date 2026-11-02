@@ -47,7 +47,7 @@ jobs:
       # Release = R8-optimized and non-debuggable: much smoother UI and a
       # smaller file than a debug build. Signed with the same key as before.
       - name: Build APK
-        run: ./gradlew :app:assembleFossRelease :app:assemblePlayRelease --stacktrace --console=plain
+        run: ./gradlew :app:assembleFossRelease --stacktrace --console=plain
 
       - name: Prepare APK
         run: |
@@ -56,9 +56,6 @@ jobs:
           cp "$APK" "SmartScan-Pro-v${VERSION_NAME}.apk"
           cp "$APK" SmartScan-Pro.apk
           sha256sum SmartScan-Pro.apk > SmartScan-Pro.apk.sha256
-          GAPK=app/build/outputs/apk/play/release/app-play-release.apk
-          test -s "$GAPK"
-          cp "$GAPK" "SmartScan-Google-v${VERSION_NAME}.apk"
 
       - name: Verify APK (signature, version, size)
         run: |
@@ -85,7 +82,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "v${VERSION_NAME}" \
-            "SmartScan-Pro-v${VERSION_NAME}.apk" "SmartScan-Google-v${VERSION_NAME}.apk" SmartScan-Pro.apk.sha256 \
+            "SmartScan-Pro-v${VERSION_NAME}.apk" SmartScan-Pro.apk.sha256 \
             --title "SmartScan Pro v${VERSION_NAME}" \
             --notes "Automatic build from ${GITHUB_SHA::7}. Download SmartScan-Pro-v${VERSION_NAME}.apk and install it on Android. Installs as an update over earlier builds (same signing key)." \
             --latest

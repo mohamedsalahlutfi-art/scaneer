@@ -72,6 +72,12 @@ interface SettingsRepository {
         get() = flowOf(DataStoreSettingsRepository.DEFAULT_CAPTURE_SPEED)
 
     suspend fun setCaptureSpeed(speedId: String) {}
+
+    /** Capture with Google's document scanner (default) instead of the SmartScan camera. */
+    val googleScannerEnabled: Flow<Boolean>
+        get() = flowOf(true)
+
+    suspend fun setGoogleScannerEnabled(enabled: Boolean) {}
 }
 
 /** DataStore-backed [SettingsRepository]; the only reader/writer of the pref. */
@@ -115,6 +121,13 @@ class DataStoreSettingsRepository(
         dataStore.edit { prefs -> prefs[AUTO_CAPTURE_ENABLED] = enabled }
     }
 
+    override val googleScannerEnabled: Flow<Boolean> =
+        dataStore.data.map { prefs -> prefs[GOOGLE_SCANNER] ?: true }
+
+    override suspend fun setGoogleScannerEnabled(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[GOOGLE_SCANNER] = enabled }
+    }
+
     override val captureSpeed: Flow<String> =
         dataStore.data.map { prefs -> prefs[CAPTURE_SPEED] ?: DEFAULT_CAPTURE_SPEED }
 
@@ -147,6 +160,7 @@ class DataStoreSettingsRepository(
         private val FILTER_DEFAULT = stringPreferencesKey("filter_default")
         private val AUTO_CAPTURE_ENABLED = booleanPreferencesKey("auto_capture_enabled")
         private val CAPTURE_SPEED = stringPreferencesKey("capture_speed")
+        private val GOOGLE_SCANNER = booleanPreferencesKey("google_scanner")
 
         /** File-backed preference DataStore used by [io.github.alexeygrigorev.openscan.data.AppContainer]. */
         fun createDefaultDataStore(context: Context): DataStore<Preferences> {

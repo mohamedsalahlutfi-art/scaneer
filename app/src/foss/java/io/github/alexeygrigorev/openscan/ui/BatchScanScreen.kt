@@ -104,7 +104,10 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.alexeygrigorev.openscan.OpenScanApp
+import io.github.alexeygrigorev.openscan.scan.DocumentScanner
 import io.github.alexeygrigorev.openscan.scan.ScanFilter
+import androidx.activity.ComponentActivity
+import androidx.activity.result.IntentSenderRequest
 import io.github.alexeygrigorev.openscan.util.formatPageCount
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -163,8 +166,14 @@ fun BatchScanRoute(
     val duplicateWarning by batchViewModel.duplicateWarning.collectAsState()
     val boundaryConfirmation by batchViewModel.boundaryConfirmation.collectAsState()
 
-    LaunchedEffect(Unit) {
-        if (!granted) permissionLauncher.launch(permission)
+    // Capture engine: Google's scanner first (unless turned off in Settings
+    // or unavailable on this phone), the SmartScan camera otherwise.
+    val googlePref by batchViewModel.googleScannerEnabled.collectAsState(initial = null)
+    var googleUnavailable by rememberSaveable { mutableStateOf(false) }
+    val useGoogle = googlePref == true && !googleUnavailable
+
+    LaunchedEffect(googlePref, googleUnavailable) {
+        if (googlePref != null && !useGoogle && !granted) permissionLauncher.launch(permission)
     }
 
     // Saving swallows back (half-way imports must not die); otherwise back
@@ -180,6 +189,16 @@ fun BatchScanRoute(
 
     when {
         galleryFallback -> GalleryImportRoute(galleryViewModel, onDone, onCancel)
+        phase == BatchScanViewModel.Phase.CAPTURE && googlePref == null ->
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black))
+        phase == BatchScanViewModel.Phase.CAPTURE && useGoogle -> GoogleScannerLauncher(
+            viewModel = batchViewModel,
+            onUnavailable = { googleUnavailable = true },
+            onCancel = {
+                batchViewModel.discard()
+                onCancel()
+            },
+        )
         !granted -> PermissionGate(
             showRationale = showRationale,
             onGrant = { permissionLauncher.launch(permission) },
@@ -238,6 +257,61 @@ fun BatchScanRoute(
                 TextButton(onClick = { confirmDiscard = false }) { Text("Keep capturing") }
             },
         )
+    }
+}
+
+/**
+ * Launches Google's document scanner (ML Kit) and hands its pages to the
+ * SmartScan review. Re-entered from Review ("back to camera") it opens the
+ * scanner again to add more pages. Falls back to the SmartScan camera when
+ * Play services or the scanner module is unavailable.
+ */
+@Composable
+private fun GoogleScannerLauncher(
+    viewModel: BatchScanViewModel,
+    onUnavailable: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val activity = LocalContext.current as? ComponentActivity
+    val busy by viewModel.busy.collectAsState()
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val uris = DocumentScanner.pageUris(result.data)
+        when {
+            uris.isNotEmpty() -> viewModel.importScanned(uris)
+            viewModel.pages.value.isNotEmpty() -> viewModel.stop()
+            else -> onCancel()
+        }
+    }
+    LaunchedEffect(Unit) {
+        if (activity == null) {
+            onUnavailable()
+            return@LaunchedEffect
+        }
+        try {
+            val sender = suspendCancellableCoroutine<android.content.IntentSender> { cont ->
+                DocumentScanner.startScanIntent(activity)
+                    .addOnSuccessListener { cont.resume(it) }
+                    .addOnFailureListener { cont.resumeWithException(it) }
+            }
+            launcher.launch(IntentSenderRequest.Builder(sender).build())
+        } catch (_: Throwable) {
+            onUnavailable()
+        }
+    }
+    Box(
+        modifier = Modifier.fillMaxSize().background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            CircularProgressIndicator()
+            Text(
+                if (busy) "Importing pages…" else "Opening scanner…",
+                color = Color.White,
+                modifier = Modifier.padding(top = 16.dp),
+            )
+        }
     }
 }
 
@@ -757,7 +831,7 @@ private fun PageThumbnail(
                         .padding(horizontal = 4.dp, vertical = 2.dp),
                 )
             }
-            if (page.quad == null) {
+            if (page.quad == null && !page.preCropped) {
                 Text(
                     "uncropped",
                     style = MaterialTheme.typography.labelSmall,

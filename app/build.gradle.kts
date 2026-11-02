@@ -186,7 +186,10 @@ dependencies {
     // CameraX own pipeline on foss. OCR (bundled, offline) and everything else
     // stay in main for both. Quoted configuration names: flavor accessors
     // don't exist at script-compile time in the Kotlin DSL.
-    "playImplementation"(libs.mlkit.document.scanner)
+    // Google's document scanner: the default capture engine in both flavors
+    // (best edges on white-on-white and under shadows); the foss build keeps
+    // its own CameraX pipeline as the fallback engine.
+    implementation(libs.mlkit.document.scanner)
     "fossImplementation"(libs.androidx.camera.core)
     "fossImplementation"(libs.androidx.camera.camera2)
     "fossImplementation"(libs.androidx.camera.lifecycle)

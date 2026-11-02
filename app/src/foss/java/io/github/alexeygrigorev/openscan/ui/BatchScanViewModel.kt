@@ -69,6 +69,8 @@ data class CapturedPage(
     val fingerprint: DocumentFingerprint? = null,
     /** Per-page enhancement override ([ScanFilter.id]); null follows the batch filter. */
     val filter: String? = null,
+    /** Already cropped by Google's scanner: no quad needed, not "uncropped". */
+    val preCropped: Boolean = false,
 ) {
     override fun equals(other: Any?) =
         other is CapturedPage && other.id == id && other.version == version
@@ -150,6 +152,49 @@ class BatchScanViewModel(
 
     // FilesDir (not cacheDir) allows resuming a long 100+ page session after
     // Android reclaims the process, or the user closes the camera by mistake.
+    private val resolver = context.contentResolver
+
+    /** Capture engine chosen in Settings; read once per screen. */
+    val googleScannerEnabled: Flow<Boolean> = settings.googleScannerEnabled
+
+    /**
+     * Pages returned by Google's document scanner: copied byte-for-byte (no
+     * re-compression) into the session, then the Pro review opens.
+     */
+    fun importScanned(uris: List<android.net.Uri>) {
+        if (uris.isEmpty()) {
+            if (pages.value.isNotEmpty()) phase.value = Phase.REVIEW
+            return
+        }
+        busy.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            var added = 0
+            for (uri in uris) {
+                runCatching {
+                    val file = File(batchDir, "page-${nextId}.jpg")
+                    resolver.openInputStream(uri)!!.use { input ->
+                        file.outputStream().use { input.copyTo(it) }
+                    }
+                    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    android.graphics.BitmapFactory.decodeFile(file.absolutePath, bounds)
+                    check(bounds.outWidth > 0 && bounds.outHeight > 0) { "unreadable page" }
+                    val page = CapturedPage(
+                        id = nextId++, file = file,
+                        frameWidth = bounds.outWidth, frameHeight = bounds.outHeight,
+                        quad = null, autoQuad = null, preCropped = true,
+                    )
+                    pages.value = pages.value + page
+                    added++
+                }
+            }
+            pageCount.value = pages.value.size
+            persistSession()
+            busy.value = false
+            if (added < uris.size) error.value = "${uris.size - added} page(s) could not be imported"
+            if (pages.value.isNotEmpty()) phase.value = Phase.REVIEW
+        }
+    }
+
     private val batchDir: File = File(context.filesDir, "smartscan-batch-${appendTo ?: "new"}").apply { mkdirs() }
     private val sessionFile = File(batchDir, "session.json")
     private var nextId = 1L
@@ -596,6 +641,7 @@ class BatchScanViewModel(
                     .put("check", page.needsCheck).put("quad", floats(page.quad))
                     .put("auto", floats(page.autoQuad)).put("refined", floats(page.refinedQuad))
                 page.filter?.let { item.put("filter", it) }
+                if (page.preCropped) item.put("pre", true)
                 page.fingerprint?.let { fp ->
                     item.put("fpH", fp.horizontal.toString())
                         .put("fpV", fp.vertical.toString())
@@ -641,6 +687,7 @@ class BatchScanViewModel(
                         userEdited = item.optBoolean("edited", false),
                         rotation = item.optInt("rotation", 0), fingerprint = fp,
                         filter = item.optString("filter", "").takeIf { it.isNotEmpty() },
+                        preCropped = item.optBoolean("pre", false),
                     ))
                 }
             }
